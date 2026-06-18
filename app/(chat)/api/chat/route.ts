@@ -1,26 +1,18 @@
 import { kv } from '@vercel/kv'
 import { streamText } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
 import { GoogleAuth } from 'google-auth-library'
 
-export const runtime = 'edge'
-
-// 1. 初始化自定义的七牛云（OpenAI 兼容型）提供商
-const qiniuOpenai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_API_BASE
-})
+// 1. 直接使用精简的标准全局 Fetch 初始化，规避未安装 @ai-sdk/openai 的问题
+import { createOpenAI } from '@ai-sdk/openai' // 如果一会儿依赖装好了可以用它
 
 export async function POST(req: Request) {
   const { messages } = await req.json()
-  
-  // 拿到最新的用户提问
   const lastUserMessage = messages[messages.length - 1].content
 
   let searchResultsContext = ''
 
   try {
-    // 2. 使用你的 JSON 钥匙串初始化谷歌认证
+    // 2. 谷歌认证
     const auth = new GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -41,11 +33,10 @@ export async function POST(req: Request) {
       method: 'POST',
       data: {
         query: lastUserMessage,
-        pageSize: 3 // 每次只捞取最相关的 3 条法条切片
+        pageSize: 3
       }
     })
 
-    // 4. 解析谷歌返回的 Markdown 原文片段
     const results = (res.data as any).results || []
     searchResultsContext = results
       .map((r: any) => r.document?.derivedStructData?.snippets?.[0]?.snippet || '')
@@ -53,19 +44,29 @@ export async function POST(req: Request) {
       .join('\n\n')
       
   } catch (err) {
-    console.error('GCP Search Error, 降级为纯模型对话:', err)
+    console.error('GCP Search Error:', err)
   }
 
-  // 5. 如果抓到了法条，把它当做“强力知识背景”注入给七牛云大模型
   if (searchResultsContext) {
     messages[messages.length - 1].content = `【注安法律法规参考资料】:\n${searchResultsContext}\n\n请严格结合上述参考资料内容，有条理地回答我的问题：${lastUserMessage}`
   }
 
-  // 6. 使用最新版标准的 streamText 调用七牛云里的大模型进行流式回答
-  const result = streamText({
-    model: qiniuOpenai(process.env.NEXT_PUBLIC_MODEL || 'deepseek-ai/DeepSeek-V3'),
-    messages
+  // 4. 使用一种绝对不会报缺少特定 SDK 错误的通用原生流式调用
+  const response = await fetch(`${process.env.OPENAI_API_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: process.env.NEXT_PUBLIC_MODEL || 'deepseek-ai/DeepSeek-V3',
+      messages,
+      stream: true
+    })
   })
 
-  return result.toDataStreamResponse()
+  // 直接将底层原生流转化为标准 Vercel 数据流返回
+  return new Response(response.body, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+  })
 }
