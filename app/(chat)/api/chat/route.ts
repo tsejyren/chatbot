@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   let searchResultsContext = ''
 
   try {
-    // 1. 谷歌云认证
+    // 1. 谷歌云知识库认证
     const auth = new GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -39,15 +39,15 @@ export async function POST(req: Request) {
       .join('\n\n')
       
   } catch (err) {
-    console.error('GCP Search Error:', err)
+    console.error('GCP Search Error, 降级为纯模型对话:', err)
   }
 
-  // 3. 注入参考资料
+  // 3. 将捞取出来的注安法律原文作为背景注入
   if (searchResultsContext) {
     messages[messages.length - 1].content = `【注安法律法规参考资料】:\n${searchResultsContext}\n\n请严格结合上述参考资料内容，有条理地回答我的问题：${lastUserMessage}`
   }
 
-  // 4. 纯原生管道流式调用七牛云
+  // 4. 纯原生标准 Fetch 管道无缝输送流式数据给七牛云
   const response = await fetch(`${process.env.OPENAI_API_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
