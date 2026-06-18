@@ -1,19 +1,18 @@
 import { kv } from '@vercel/kv'
-import { OpenAIStream, StreamingTextResponse } from 'ai'
-import OpenAI from 'openai'
+import { streamText } from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
 import { GoogleAuth } from 'google-auth-library'
 
 export const runtime = 'edge'
 
-// 1. 初始化七牛云客户端
-const openai = new OpenAI({
+// 1. 初始化自定义的七牛云（OpenAI 兼容型）提供商
+const qiniuOpenai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_API_BASE
 })
 
 export async function POST(req: Request) {
-  const { messages, previewToken } = await req.json()
-  const userId = 'user_test' // 个人备考测试使用
+  const { messages } = await req.json()
   
   // 拿到最新的用户提问
   const lastUserMessage = messages[messages.length - 1].content
@@ -34,7 +33,7 @@ export async function POST(req: Request) {
     const projectId = process.env.GOOGLE_PROJECT_ID
     const dataStoreId = process.env.GOOGLE_DATA_STORE_ID
     
-    // 3. 请求谷歌云标准版检索接口（只捞取 Markdown 原文，完全免费不额外扣费）
+    // 3. 请求谷歌云标准版检索接口
     const searchUrl = `https://discoveryengine.googleapis.com/v1alpha/projects/${projectId}/locations/global/dataStores/${dataStoreId}/servingConfigs/default_search:search`
     
     const res = await client.request({
@@ -42,7 +41,7 @@ export async function POST(req: Request) {
       method: 'POST',
       data: {
         query: lastUserMessage,
-        pageSize: 3 // 每次只捞取最相关的 3 条法条切片，节省 Token
+        pageSize: 3 // 每次只捞取最相关的 3 条法条切片
       }
     })
 
@@ -59,16 +58,14 @@ export async function POST(req: Request) {
 
   // 5. 如果抓到了法条，把它当做“强力知识背景”注入给七牛云大模型
   if (searchResultsContext) {
-    messages[messages.length - 1].content = `【注安法律法规参考资料】:\n${searchResultsContext}\n\n请严格结合上述参考资料，回答我的问题：${lastUserMessage}`
+    messages[messages.length - 1].content = `【注安法律法规参考资料】:\n${searchResultsContext}\n\n请严格结合上述参考资料内容，有条理地回答我的问题：${lastUserMessage}`
   }
 
-  // 6. 召唤七牛云里的大模型进行流式回答（默认使用你在环境变量里配的模型）
-  const response = await openai.chat.completions.create({
-    model: process.env.NEXT_PUBLIC_MODEL || 'deepseek-ai/DeepSeek-V3',
-    messages,
-    stream: true
+  // 6. 使用最新版标准的 streamText 调用七牛云里的大模型进行流式回答
+  const result = streamText({
+    model: qiniuOpenai(process.env.NEXT_PUBLIC_MODEL || 'deepseek-ai/DeepSeek-V3'),
+    messages
   })
 
-  const stream = OpenAIStream(response)
-  return new StreamingTextResponse(stream)
+  return result.toDataStreamResponse()
 }
